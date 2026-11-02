@@ -1,0 +1,317 @@
+USERLAND UBUNTU (ANDROID) — CODE-SERVER INSTALLATION NOTES
+
+Purpose
+
+Install and run code-server as a local browser-based VS Code-like IDE
+inside UserLAnd Ubuntu on Android (ARM64/aarch64), without systemd.
+
+Known successful environment from the tested setup: - UserLAnd Ubuntu
+26.04.1 LTS (Resolute Raccoon) - ARM64 / aarch64 - code-server 4.144.0 -
+VS Code engine 1.144.0 - Standalone install under
+~/.local/lib/code-server-4.144.0
+
+These version numbers are the versions observed during that
+installation. The official installer may offer a newer release in the
+future.
+
+IMPORTANT
+
+-   Do not use systemctl in UserLAnd; systemd is not PID 1.
+-   The standalone installer avoids installing code-server as a system
+    package.
+-   Keep code-server bound to 127.0.0.1 unless you deliberately want to
+    expose it to other devices.
+-   Do not disable password authentication when the server may be
+    reachable from another device.
+-   If the PRoot coreutils security violation occurs, apply the GNU
+    compatibility workaround in section 2 before running the installer.
+
+1. Prerequisites
+
+Update apt metadata:
+
+    apt update
+
+Ensure curl and tar are installed:
+
+    apt install curl tar
+
+If you also need native extensions or build tools, install
+build-essential using the companion UserLAnd build-essential guide.
+
+Check architecture and tools:
+
+    uname -m
+    curl --version
+    tar --version
+    bash --version
+    python3 --version
+
+Expected architecture: aarch64.
+
+2. Apply the UserLAnd GNU coreutils compatibility workaround
+
+On the affected UserLAnd Ubuntu installation, PRoot Link2Symlink caused
+errors such as:
+
+    Security violation: Requested utility 'mkdir' does not match executable name:
+      /usr/bin/.proot.l2s.coreutils.dpkg-new0001.0116
+
+The default commands were symlinks to Rust coreutils. GNU alternatives
+existed as /usr/bin/gnuls, /usr/bin/gnumkdir, etc.
+
+Create a user-local directory of links to the GNU alternatives. Python
+is used because mkdir/ln may themselves be affected:
+
+    python3 - <<'PY'
+    import os
+
+    directory = os.path.expanduser("~/bin/gnu")
+    os.makedirs(directory, exist_ok=True)
+
+    names = [
+        "ls", "cat", "mv", "cp", "chmod", "chown", "uname",
+        "basename", "dirname", "dircolors", "mkdir", "ln", "rm",
+        "rmdir", "touch", "readlink"
+    ]
+
+    for name in names:
+        target = "/usr/bin/gnu" + name
+        link = os.path.join(directory, name)
+
+        if not os.path.isfile(target):
+            print("SKIP (GNU alternative not found):", target)
+            continue
+
+        if os.path.lexists(link):
+            os.remove(link)
+
+        os.symlink(target, link)
+        print("Linked:", link, "->", target)
+    PY
+
+Activate the PATH for this terminal:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Test:
+
+    command -v uname
+    uname -a
+    ls -la "$HOME"
+    cat /etc/os-release
+    mkdir -p "$HOME/gnu-test"
+    rmdir "$HOME/gnu-test"
+
+If one of the commands is skipped because its GNU alternative is
+missing, do not create a dangling link. Find an available GNU
+alternative first.
+
+Persist the PATH only after it works. Add this line once to ~/.bashrc:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+A duplicate-safe Python method:
+
+    python3 - <<'PY'
+    from pathlib import Path
+    p = Path.home() / ".bashrc"
+    line = 'export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"'
+    content = p.read_text() if p.exists() else ""
+    if line not in content:
+        with p.open("a") as f:
+            f.write("\n" + line + "\n")
+    print("Updated", p)
+    PY
+
+Reload:
+
+    source ~/.bashrc
+
+If startup prints another PRoot security violation, add that utility’s
+GNU alternative to the link script. In the tested installation, readlink
+was needed when running code-server.
+
+3. Preview the official standalone installer
+
+The official installer supports the ARM64 release and standalone method.
+
+    curl -fsSL https://code-server.dev/install.sh | bash -s -- --dry-run --method=standalone
+
+Review the output. It should identify the ARM64 release and show an
+install under ~/.local, not an apt/system package installation.
+
+If the preview fails, stop and inspect the error rather than proceeding.
+
+4. Install code-server
+
+Run:
+
+    curl -fsSL https://code-server.dev/install.sh | bash -s -- --method=standalone
+
+The successful installation in the tested environment printed a message
+similar to:
+
+    Standalone release has been installed into ~/.local/lib/code-server-4.144.0
+
+The installer creates the executable link at ~/.local/bin/code-server.
+
+Ensure PATH includes ~/.local/bin:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Verify:
+
+    code-server --version
+
+If the command reports a PRoot security violation for a utility such as
+readlink, confirm that its GNU alternative exists:
+
+    python3 - <<'PY'
+    import os
+    for name in ["readlink", "realpath", "dirname", "basename"]:
+        p = "/usr/bin/gnu" + name
+        if os.path.isfile(p):
+            print(p)
+    PY
+
+For example, if /usr/bin/gnureadlink exists, create the link:
+
+    python3 - <<'PY'
+    import os
+    d = os.path.expanduser("~/bin/gnu")
+    os.makedirs(d, exist_ok=True)
+    target = "/usr/bin/gnureadlink"
+    link = os.path.join(d, "readlink")
+    if os.path.isfile(target):
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(target, link)
+        print("Linked", link, "->", target)
+    else:
+        print("GNU readlink alternative not found:", target)
+    PY
+
+Then reactivate PATH and retry:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+    readlink --version
+    code-server --version
+
+5. Configure password and local binding
+
+Create the configuration directory/file using Python. Replace the
+example password with a strong password of your own. Do not share this
+file; it contains the login secret.
+
+    python3 - <<'PY'
+    from pathlib import Path
+
+    config = Path.home() / ".config/code-server/config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+
+    config.write_text('''bind-addr: 127.0.0.1:8080
+
+auth: password password: “REPLACE-WITH-YOUR-OWN-STRONG-PASSWORD” cert:
+false ’’’)
+
+    print("Wrote", config)
+    PY
+
+Important: replace REPLACE-WITH-YOUR-OWN-STRONG-PASSWORD before
+starting. If the password contains YAML-special characters, keeping it
+quoted is important. For a password containing a double quote or
+backslash, use a different password or correctly YAML-escape those
+characters.
+
+The configuration file is normally located at:
+
+    ~/.config/code-server/config.yaml
+
+Inspect it carefully; avoid posting its contents publicly because it
+contains your password.
+
+6. Start code-server for a project
+
+For a project folder such as ~/worklab/poseplay:
+
+    code-server ~/worklab/poseplay --bind-addr 127.0.0.1:8080
+
+Open the browser on the same Android device:
+
+    http://127.0.0.1:8080
+
+Enter the password configured in config.yaml.
+
+The command runs in the foreground. Keep the UserLAnd session alive
+while using the IDE. Stop it with Ctrl+C in the terminal.
+
+7. Optional background start
+
+After foreground startup and browser login have been tested, you can
+run:
+
+    nohup code-server "$HOME/worklab/poseplay" \
+      --bind-addr 127.0.0.1:8080 \
+      > "$HOME/code-server.log" 2>&1 &
+
+To inspect the log:
+
+    tail -n 50 "$HOME/code-server.log"
+
+To stop it, identify the process first:
+
+    pgrep -af code-server
+
+Then terminate only the code-server process you started. Do not kill
+unrelated Node processes.
+
+8. Troubleshooting
+
+A. “Security violation: Requested utility … does not match executable
+name” - This is the PRoot/coreutils issue observed in the affected
+UserLAnd setup. - Check whether /usr/bin/gnu exists. - Create ~/bin/gnu/
+pointing to that GNU alternative using Python. - Ensure ~/bin/gnu is
+before /usr/bin in PATH. - Retry the failed command.
+
+B. “code-server: command not found” - Run: export
+PATH=“HOME/bin/gnu:HOME/.local/bin:$PATH"
+   - Check:
+       ls -l "$HOME/.local/bin/code-server”
+“$HOME/.local/bin/code-server” –version
+
+C. Password prompt / login rejected - Inspect
+~/.config/code-server/config.yaml locally. - Confirm auth: password and
+the password value. - Stop and restart code-server after changing
+configuration.
+
+D. systemctl fails with “System has not been booted with systemd” -
+Expected in UserLAnd. Start code-server manually as shown above. - Do
+not try to enable a system service with systemctl.
+
+E. Browser cannot connect - Confirm code-server is still running in
+UserLAnd. - Confirm it is bound to 127.0.0.1:8080. - Open
+http://127.0.0.1:8080 on the same Android device. - Check the terminal
+or ~/code-server.log for errors.
+
+9. Security notes
+
+-   127.0.0.1 makes the service local to the Android device.
+-   Do not use –bind-addr 0.0.0.0 unless you understand the network
+    exposure and have secured access appropriately.
+-   Use a strong password.
+-   Do not publish or upload config.yaml because it contains the
+    password.
+-   The standalone install and configuration are stored in your UserLAnd
+    Linux home directory. Back up projects and configuration separately.
+
+10. Quick checklist
+
+[ ] curl and tar installed [ ] GNU compatibility links created if PRoot
+errors occur [ ] PATH includes ~/bin/gnu and ~/.local/bin [ ] standalone
+installer dry run reviewed [ ] standalone installation completed [ ]
+code-server –version works [ ] config.yaml contains a strong password [
+] code-server starts for the desired project [ ] http://127.0.0.1:8080
+opens in Android browser
+
+END

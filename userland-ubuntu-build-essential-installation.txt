@@ -1,0 +1,197 @@
+USERLAND UBUNTU (ANDROID) — BUILD-ESSENTIALS INSTALLATION NOTES
+
+Purpose
+
+Install the C/C++ build toolchain in a fresh UserLAnd Ubuntu environment
+(ARM64/aarch64), and work around the coreutils/PRoot Link2Symlink issue
+observed in this environment.
+
+IMPORTANT
+
+-   These instructions are for UserLAnd/PRoot, not a normal Ubuntu boot.
+-   Do not expect systemd or systemctl to work. UserLAnd does not boot
+    with systemd as PID 1.
+-   Do not purge systemd or blindly run repeated “apt upgrade” / “dpkg
+    –configure -a” commands to fix the systemd service error.
+-   The GNU compatibility PATH workaround below is user-local. It does
+    not replace or remove Ubuntu packages.
+-   Run commands in the Ubuntu UserLAnd terminal.
+
+1. Update package metadata
+
+    apt update
+
+If apt reports an error, read the complete error before continuing. Do
+not assume a package installation succeeded merely because some packages
+were unpacked.
+
+2. Install build-essential
+
+    apt install build-essential
+
+This meta-package normally installs the compiler and build tools,
+including gcc, g++, make, and required development dependencies.
+
+3. Verify the toolchain
+
+    gcc --version
+    g++ --version
+    make --version
+    dpkg -l build-essential gcc g++ make
+
+Run a real compile test:
+
+    printf '%s\n' 'int main(void) { return 0; }' > "$HOME/test-build.c"
+    gcc "$HOME/test-build.c" -o "$HOME/test-build"
+    "$HOME/test-build"
+    echo $?
+
+Expected exit code: 0.
+
+If the shell’s external printf command is broken, use Python to create
+the test source instead:
+
+    python3 - <<'PY'
+    from pathlib import Path
+    Path.home().joinpath("test-build.c").write_text(
+        "int main(void) { return 0; }\n"
+    )
+    PY
+    gcc "$HOME/test-build.c" -o "$HOME/test-build"
+    "$HOME/test-build"
+    echo $?
+
+4. Repair the UserLAnd coreutils command lookup (if needed)
+
+On the affected Ubuntu/UserLAnd installation, commands such as ls, cat,
+uname, mkdir, basename, dirname, dircolors, readlink and others failed
+with errors similar to:
+
+    Security violation: Requested utility 'mkdir' does not match executable name:
+      /usr/bin/.proot.l2s.coreutils.dpkg-new0001.0116
+
+The affected /usr/bin commands were symlinks to the Rust multi-call
+coreutils binary under /usr/lib/cargo/bin/coreutils. PRoot’s
+Link2Symlink handling caused a utility-name mismatch. GNU alternatives
+were present under names such as /usr/bin/gnuls and /usr/bin/gnumkdir.
+
+The workaround is to create a user-local directory containing links to
+the GNU alternatives, then put it before /usr/bin in PATH.
+
+Use Python so this setup does not depend on the broken mkdir/ln
+commands:
+
+    python3 - <<'PY'
+    import os
+
+    directory = os.path.expanduser("~/bin/gnu")
+    os.makedirs(directory, exist_ok=True)
+
+    # Names observed to have GNU alternatives in the affected installation.
+    names = [
+        "ls", "cat", "mv", "cp", "chmod", "chown", "uname",
+        "basename", "dirname", "dircolors", "mkdir", "ln", "rm",
+        "rmdir", "touch", "readlink"
+    ]
+
+    for name in names:
+        target = "/usr/bin/gnu" + name
+        link = os.path.join(directory, name)
+
+        if not os.path.isfile(target):
+            print("SKIP (GNU alternative not found):", target)
+            continue
+
+        if os.path.lexists(link):
+            os.remove(link)
+
+        os.symlink(target, link)
+        print("Linked:", link, "->", target)
+    PY
+
+Activate the compatibility directory in the current terminal:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Test a few commands:
+
+    command -v ls
+    ls -la "$HOME"
+    uname -a
+    cat /etc/os-release
+    mkdir -p "$HOME/gnu-test"
+    rmdir "$HOME/gnu-test"
+
+Expected: command -v ls should show $HOME/bin/gnu/ls and the commands
+should run without the PRoot security violation.
+
+IMPORTANT: The script only creates links for GNU alternatives that
+actually exist. If a command is skipped, inspect whether another GNU
+alternative is available before creating a link. Do not create links to
+nonexistent files.
+
+5. Make the PATH workaround persistent
+
+Only after testing it successfully, add this line to ~/.bashrc:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Avoid appending the same line repeatedly. To add it only if it is not
+already present, run:
+
+    python3 - <<'PY'
+    from pathlib import Path
+    p = Path.home() / ".bashrc"
+    line = 'export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"'
+    content = p.read_text() if p.exists() else ""
+    if line not in content:
+        with p.open("a") as f:
+            f.write("\n" + line + "\n")
+    print("Updated", p)
+    PY
+
+Then reload:
+
+    source ~/.bashrc
+
+If shell startup still reports a coreutils security violation, note the
+missing utility name and look for its GNU alternative:
+
+    python3 - <<'PY'
+    import os
+    for name in ["basename", "dirname", "dircolors", "readlink", "realpath"]:
+        p = "/usr/bin/gnu" + name
+        if os.path.isfile(p):
+            print(p)
+    PY
+
+Add any available missing alternatives to the names list in section 4
+and rerun the Python link script.
+
+6. If apt reports a systemd configuration error
+
+A UserLAnd environment is not a conventional Ubuntu system boot. This
+can cause systemd service setup or systemctl operations to fail because
+PID 1 is not systemd.
+
+Check package state:
+
+    dpkg --audit
+    dpkg -l build-essential gcc g++ make
+
+Do not purge systemd packages just to silence the error. Do not run
+systemctl expecting it to manage services in UserLAnd. If
+build-essential, gcc, g++, and make are installed and the compile test
+succeeds, the toolchain itself is usable even if an unrelated service
+package reports a configuration issue. If apt is left in a broken state,
+inspect the exact dpkg/apt error before attempting repairs.
+
+7. Quick checklist
+
+[ ] apt update completed [ ] apt install build-essential completed or
+any errors were investigated [ ] gcc –version works [ ] g++ –version
+works [ ] make –version works [ ] the C compile test exits with status 0
+[ ] if PRoot coreutils errors occur, GNU compatibility links were
+created [ ] the PATH line was tested before being added to ~/.bashrc
+
+END
