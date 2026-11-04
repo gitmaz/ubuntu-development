@@ -1,0 +1,166 @@
+UserLAnd Ubuntu (PRoot): Fixing Cursor Agent CLI
+=================================================
+
+Purpose
+-------
+This guide records the workaround for running Cursor Agent (`agent`) in
+UserLAnd Ubuntu on Android when PRoot's Link2Symlink handling causes errors
+for `/usr/bin/env` or `realpath`.
+
+The workaround:
+1. Uses GNU `realpath` instead of the problematic Rust coreutils command.
+2. Runs Cursor's launcher explicitly through `/usr/bin/bash`, bypassing its
+   `#!/usr/bin/env bash` shebang.
+3. Adds an `agent()` shell function so the normal `agent` command works.
+
+These steps do not modify Cursor's installed files.
+
+1. Check the GNU realpath executable
+------------------------------------
+Run:
+
+    ls -l /usr/bin/gnurealpath
+
+In this setup, `/usr/bin/gnurealpath` was present.
+
+2. Create a user-local realpath link
+------------------------------------
+Run:
+
+    python3 - <<'PY'
+    import os
+
+    directory = os.path.expanduser('~/bin/gnu')
+    os.makedirs(directory, exist_ok=True)
+
+    link = os.path.join(directory, 'realpath')
+    target = '/usr/bin/gnurealpath'
+
+    if os.path.lexists(link):
+        os.remove(link)
+
+    os.symlink(target, link)
+    print('Created:', link, '->', target)
+    PY
+
+3. Put the GNU compatibility directory first in PATH
+----------------------------------------------------
+For the current terminal session:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Check:
+
+    command -v realpath
+    realpath "$HOME/.local/bin/agent"
+
+`command -v realpath` should show:
+
+    /home/userland/bin/gnu/realpath
+
+To make the PATH setting permanent, keep this line in `~/.bashrc`:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+If `~/.bashrc` already contains separate PATH lines for these two
+directories, replace those lines with the single combined line above.
+Avoid adding the same line repeatedly.
+
+4. Test Cursor Agent through Bash
+---------------------------------
+Do not run the versioned `cursor-agent` file directly. Its first line is:
+
+    #!/usr/bin/env bash
+
+That makes the system invoke `/usr/bin/env` directly, bypassing the PATH
+workaround and potentially triggering the PRoot security violation.
+
+Instead, run the launcher through Bash explicitly:
+
+    /usr/bin/bash "$HOME/.local/bin/agent" --version
+
+Important: there must be a space between the closing quote and `--version`.
+
+Expected version in the original setup:
+
+    2026.10.22-27dcf5f
+
+5. Make the workaround permanent with an agent() function
+---------------------------------------------------------
+Add this function to `~/.bashrc`:
+
+    agent() {
+        /usr/bin/bash "$HOME/.local/bin/agent" "$@"
+    }
+
+You can append it safely using:
+
+    python3 - <<'PY'
+    from pathlib import Path
+
+    p = Path.home() / '.bashrc'
+    content = p.read_text()
+
+    function = '''
+    # Cursor Agent workaround for UserLAnd PRoot
+    agent() {
+        /usr/bin/bash "$HOME/.local/bin/agent" "$@"
+    }
+    '''
+
+    if 'agent() {' not in content:
+        p.write_text(content.rstrip() + '\n' + function)
+
+    print('Updated ~/.bashrc')
+    PY
+
+Reload the shell configuration:
+
+    source ~/.bashrc
+
+6. Verify the permanent command
+-------------------------------
+Run:
+
+    type agent
+    agent --version
+
+Then start Cursor Agent normally:
+
+    agent
+
+Why this works
+--------------
+- The PRoot error for `realpath` occurs because the system command resolves
+  to a Rust multicall coreutils executable that conflicts with PRoot's
+  Link2Symlink interception. The user-local `realpath` link selects GNU
+  `realpath` instead.
+- The Cursor launcher starts with `#!/usr/bin/env bash`. Executing the
+  script normally makes the kernel invoke `/usr/bin/env` directly.
+- Running `/usr/bin/bash "$HOME/.local/bin/agent"` asks Bash to read and
+  execute the launcher as a script, so the shebang is not used.
+- The `agent()` function makes that explicit Bash invocation transparent
+  whenever an interactive Bash shell loads `~/.bashrc`.
+
+Troubleshooting
+---------------
+If `realpath` still triggers a PRoot security violation:
+
+    export PATH="$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+    command -v realpath
+    realpath "$HOME/.local/bin/agent"
+
+If `agent` is not found after adding the function:
+
+    source ~/.bashrc
+    type agent
+
+If Cursor Agent later changes its installation layout, inspect the launcher:
+
+    ls -l "$HOME/.local/bin/agent"
+
+The function deliberately calls the stable user-facing launcher path
+`~/.local/bin/agent`, rather than hardcoding a version-specific directory.
+
+Do not replace `/usr/bin/env`, remove system packages, or edit Cursor's
+installed launcher just to apply this workaround.

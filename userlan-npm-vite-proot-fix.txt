@@ -1,0 +1,158 @@
+UserLAnd Ubuntu / PRoot: Fixing npm run dev when /usr/bin/env fails
+=======================================================================
+
+ISSUE
+-----
+In UserLAnd Ubuntu on Android, `npm run dev` may fail with:
+
+    Security violation: Requested utility `env` does not match executable name:
+      /usr/bin/.proot.l2s.coreutils.dpkg-new0001.0116
+
+This is a PRoot Link2Symlink conflict involving the system `/usr/bin/env`.
+
+IMPORTANT DIAGNOSIS
+------------------
+Putting GNU `env` first in PATH does not override an absolute shebang such as
+`#!/usr/bin/env node`. The kernel executes `/usr/bin/env` directly, bypassing
+PATH lookup.
+
+Confirmed in the affected setup:
+
+- GNU env is available at `/usr/bin/gnuenv`.
+- The user-level link `~/bin/gnu/env` points to `/usr/bin/gnuenv`.
+- `command -v env` reports `~/bin/gnu/env`, and `env --version` works.
+- npm is `/usr/bin/npm`; its first line is `#!/usr/bin/env node`.
+- `node_modules/.bin/vite` also starts with `#!/usr/bin/env node`.
+- Running Vite directly through Node works:
+
+      node ./node_modules/vite/bin/vite.js
+
+STEP 1 — Set the compatibility PATH
+-----------------------------------
+For the current terminal:
+
+    export PATH="$HOME/bin:$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Check:
+
+    command -v env
+    env --version
+
+Expected `command -v env`:
+
+    /home/userland/bin/gnu/env
+
+To make this permanent, keep one combined PATH line in `~/.bashrc`:
+
+    export PATH="$HOME/bin:$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Avoid adding duplicate PATH lines. Reload after editing:
+
+    source ~/.bashrc
+
+STEP 2 — Check Node and npm locations
+-------------------------------------
+Run:
+
+    command -v node
+    command -v npm
+    node --version
+    npm --version
+
+In the affected setup, npm was `/usr/bin/npm`. Confirm the Node path before
+using the wrapper in Step 3. If Node is not `/usr/bin/node`, use its actual
+absolute path in the wrapper.
+
+STEP 3 — Optional user-level npm wrapper
+----------------------------------------
+The npm launcher itself uses `#!/usr/bin/env node`. To bypass that shebang,
+create a user-level wrapper:
+
+    python3 - <<'PY'
+    from pathlib import Path
+
+    wrapper = Path.home() / 'bin' / 'npm'
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+
+    wrapper.write_text(
+        '#!/usr/bin/bash\n'
+        'exec /usr/bin/node /usr/bin/npm "$@"\n'
+    )
+    wrapper.chmod(0o755)
+
+    print('Created:', wrapper)
+    PY
+
+This assumes Node is `/usr/bin/node`. If Step 2 showed a different path,
+replace `/usr/bin/node` in the wrapper with the actual Node executable.
+
+Ensure `~/bin` comes before `/usr/bin` in PATH:
+
+    export PATH="$HOME/bin:$HOME/bin/gnu:$HOME/.local/bin:$PATH"
+
+Verify:
+
+    command -v npm
+    npm --version
+
+Expected:
+
+    /home/userland/bin/npm
+
+NOTE: This wrapper bypasses npm's own shebang only. It does not fix Vite's
+separate `#!/usr/bin/env node` shebang. Continue to Step 4.
+
+STEP 4 — Reliable Vite workaround
+---------------------------------
+The confirmed working command is:
+
+    node ./node_modules/vite/bin/vite.js
+
+To make `npm run dev` use this working command, edit the project's
+`package.json`. Change the dev script from:
+
+    "dev": "vite"
+
+to:
+
+    "dev": "node ./node_modules/vite/bin/vite.js"
+
+Save the file and run:
+
+    npm run dev
+
+This avoids executing `node_modules/.bin/vite` and its problematic shebang.
+It does not modify Vite itself or reinstall dependencies.
+
+If you do not want to change `package.json`, start the development server
+with this command instead:
+
+    node ./node_modules/vite/bin/vite.js
+
+STEP 5 — Verify
+---------------
+Run:
+
+    npm run dev
+
+Vite should print its local development URL, usually:
+
+    http://localhost:5173/
+
+Stop the server with Ctrl+C.
+
+SAFETY AND TROUBLESHOOTING
+--------------------------
+- An absolute shebang path like `/usr/bin/env` cannot be overridden by
+  putting a different `env` earlier in PATH.
+- Do not replace or delete `/usr/bin/env` as an initial workaround.
+  It is a system-level executable and changing it may affect other tools.
+- Do not reinstall Node, npm, or project dependencies just for this error.
+- The npm wrapper in Step 3 is optional if npm itself already starts.
+  It bypasses only npm's own shebang.
+- The package.json change in Step 4 is the confirmed project-level way
+  to avoid Vite's shebang.
+- Other scripts (build, lint, preview, Playwright) may invoke their own
+  executable shims. If one fails with the same PRoot error, inspect that
+  executable and invoke its JavaScript entry point through Node. The Vite
+  change does not automatically fix every tool.
