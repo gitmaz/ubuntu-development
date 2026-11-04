@@ -156,3 +156,9 @@ SAFETY AND TROUBLESHOOTING
   executable shims. If one fails with the same PRoot error, inspect that
   executable and invoke its JavaScript entry point through Node. The Vite
   change does not automatically fix every tool.
+
+The revised version now clearly distinguishes:
+1. The optional npm wrapper (bypasses npm's own shebang).
+2. The Vite fix (changes "dev": "vite" to "dev": "node ./node_modules/vite/bin/vite.js").
+3. Why the GNU env PATH workaround alone doesn't solve absolute shebangs.
+4. Troubleshooting for the other npm scripts.
